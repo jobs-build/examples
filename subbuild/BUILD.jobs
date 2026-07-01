@@ -1,0 +1,12 @@
+# Parent build: consumes a Rust-wheel-style descendant sub-build as an input.
+# subbuild("sub") builds the ./sub directory (its own BUILD.jobs) and mounts its
+# output read-only; the script reads it via JOBS_DEPS.
+
+def build():
+    sub = subbuild("sub")
+    return struct(
+        inputs = {"sub": sub},
+        env = {},
+        script = 'printf "%s" "$(cat "$(jq -r .sub <<<"$JOBS_DEPS")/value")" > "$out/result"',
+        runtime_deps = [],
+    )

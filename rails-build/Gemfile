@@ -1,0 +1,15 @@
+source "https://rubygems.org"
+
+# A lean but real Rails 8 stack for a hermetic, offline, musl build.
+gem "rails", "~> 8.1"
+gem "propshaft"
+gem "sqlite3"
+gem "puma"
+gem "jsbundling-rails"
+gem "turbo-rails"
+gem "stimulus-rails"
+gem "jbuilder"
+gem "bootsnap", require: false
+gem "bcrypt"
+gem "tzinfo-data", platforms: %i[windows jruby]
+gem "json", "2.9.1"  # pin pre-SIMD json (2.10+ uses __builtin_cpu_supports, which zig/lld rejects in a .so)

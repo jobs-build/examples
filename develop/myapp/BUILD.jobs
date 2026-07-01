@@ -1,0 +1,29 @@
+# BUILD.jobs — a tiny build recipe used to demonstrate `jobs develop`.
+#
+# build() declares ONE imported dependency (produced by the "greeting" fetcher)
+# and a script that combines a file from the local source ($SRC) with a file
+# from that dependency. When you run `jobs develop` against this directory it
+# will FIRST run the greeting fetcher to produce the dependency, then drop you
+# into a shell where $SRC, $GREETING and $out are all set up.
+#
+# There is no plugins() here — this build needs no plugins, only one import.
+
+def build():
+    greeting = imp(fetcher = "greeting", params = {})
+    return struct(
+        # Discovered inputs: things that must be built/imported and assembled
+        # into the read-only content-addressed /jobs/store before the build runs.
+        # Each is NAMED; the name is the key the script looks up in JOBS_DEPS.
+        inputs = {"greeting": greeting},
+        # Env holds only static values now — a dependency's path is its content
+        # key (BOK), unknown until it is built, so it cannot be baked in here.
+        env = {},
+        # The runner injects JOBS_DEPS = {"greeting": "/jobs/store/<BOK>"}; the
+        # script resolves the dep path from it (jq is in the vendored shell).
+        # `jobs develop` prints this script and saves it at /build/build.sh.
+        script = '''
+            GREETING="$(jq -r .greeting <<<"$JOBS_DEPS")"
+            cat "$SRC/message.txt" "$GREETING/greeting.txt" > "$out/combined.txt"
+        ''',
+        runtime_deps = [],
+    )

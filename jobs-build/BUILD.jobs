@@ -1,0 +1,80 @@
+# BUILD.jobs — JOBS builds JOBS: compile one of the three jobs binaries fully
+# offline & CGO-free, over the real ~100-module dependency graph.
+#
+# This is the go-build example scaled to the real project. It builds ONE binary
+# per invocation, selected by the `cmd` build param. The source is a JOBS repo
+# checkout; copy this file to its root first (see README.md):
+#
+#     cp jobs-build/BUILD.jobs <repo>/BUILD.jobs
+#     jb run   --source <repo> --param cmd=jobs
+#     jb image --source <repo> --param cmd=jobs-server -o out.tar
+#     jb image --source <repo> --param cmd=jobs-runner -o out.tar
+#
+# Each `cmd` value is a DISTINCT build (different params -> different definition
+# key K -> its own cache entry), so the three binaries are three separate builds
+# sharing one recipe (the recipe runtime has no load(), so params is how we stay
+# DRY). `<repo>` must be the repository root (the recipe reads the root go.sum and
+# compiles ./cmd/<cmd>); use a clean export of the tree, see the README.
+
+def plugins():
+    return {"go": imp(fetcher = "goplugin", params = {})}
+
+def build():
+    cmd = params["cmd"]  # "jobs" | "jobs-server" | "jobs-runner"
+
+    # The Go toolchain tarball is named by GOARCH; the script body is arch-agnostic
+    # (GOROOT-relative), so only the toolchain URL + sha256 are selected per-arch.
+    # Pinned to the same go1.26.4 release as go-build.
+    goarch = {"linux/amd64": "amd64", "linux/arm64": "arm64"}[platform]
+    go_sha = {
+        "amd64": "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f",
+        "arm64": "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768",
+    }
+    toolchain = imp(fetcher = "tarball+https", params = {
+        "url": "https://go.dev/dl/go1.26.4.linux-" + goarch + ".tar.gz",
+        "sha256": go_sha[goarch],
+    })
+
+    # The go plugin turns the root go.sum into one gomod import per module — here
+    # the full jobs dependency graph (~100 modules: amber-store + its transitive
+    # deps, pebble, go-fuse, go-containerregistry, starlark-go, ...).
+    mods = plugins["go"](go_sum = source.read("go.sum"))
+
+    inputs = {"toolchain": toolchain}
+    copies = []
+    for m in mods:
+        name = "mod_" + m["path"].replace("/", "_").replace(".", "_").replace("-", "_")
+        inputs[name] = m["input"]
+        # Each module input's tree is rooted at cache/download/...; stage it in.
+        copies.append('cp -dr "$(jq -r .' + name + ' <<<"$JOBS_DEPS")/." "$GOMODCACHE/"')
+
+    # Stage the toolchain + module cache from the read-only /jobs/store into the
+    # writable build tree with sequential copies, then build from local disk — the
+    # Go toolchain opens its stdlib sources with high concurrency, which the
+    # on-demand FUSE store does not serve well (same rationale as go-build).
+    head = """
+export GOROOT=/build/goroot
+mkdir -p "$GOROOT" "$out/bin"
+cp -dr "$(jq -r .toolchain <<<"$JOBS_DEPS")/go/." "$GOROOT/"
+export PATH="$GOROOT/bin:$PATH"
+export GOMODCACHE=/build/gomodcache GOCACHE=/build/gocache GOPATH=/build/gopath
+export GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOTOOLCHAIN=local CGO_ENABLED=0
+mkdir -p "$GOMODCACHE/cache/download"
+"""
+    tail = "\n".join([
+        'chmod -R u+w "$GOROOT" "$GOMODCACHE" 2>/dev/null || true',
+        'cd "$SRC"',
+        'go build -o "$out/bin/' + cmd + '" ./cmd/' + cmd,
+        "cat > \"$out/JOBS.entrypoint\" <<'EOF'",
+        '{"command": "bin/' + cmd + '", "args": [], "env": {}}',
+        "EOF",
+        "",
+    ])
+    script = head + "\n".join(copies) + "\n" + tail
+
+    return struct(
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = [],
+    )

@@ -1,0 +1,17 @@
+# Generated/local Rails state — not part of the committed example source.
+/log/*
+/tmp/*
+/storage/*
+!/storage/.keep
+/public/assets
+/public/packs
+/node_modules
+/app/assets/builds/*
+!/app/assets/builds/.keep
+/vendor/bundle
+/vendor/cache
+.bundle
+
+# Secrets — the example boots with SECRET_KEY_BASE_DUMMY, so these are absent.
+/config/master.key
+/config/credentials.yml.enc

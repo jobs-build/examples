@@ -1,0 +1,103 @@
+# BUILD.jobs — build a pure-Python app with JOBS + UV, fully offline.
+#
+# plugins(): declares the "uv" build plugin (parses uv.lock -> one pypi fetch per
+#            py3-none-any dependency, fetcher "pypi").
+# build():   fetches the UV static-musl binary + a relocatable musl CPython
+#            (tarball+https) and the musl loader (hostmusl), builds a wheelhouse
+#            from the fetched wheels, installs the LOCKED deps offline into
+#            $out/site-packages, copies the app package, and writes a launcher
+#            script + JOBS.entrypoint. The interpreter is musl-DYNAMIC, so the
+#            launcher invokes the loader explicitly and python+musl are runtime_deps.
+
+def plugins():
+    return {"uv": imp(fetcher = "uvplugin", params = {})}
+
+def build():
+    # Map the JOBS platform to the musl arch token. Every "x86_64" in the script
+    # below (ld-musl loader, the uv-<arch> extract dir) is this same token, so a
+    # single .replace() at the end retargets the script; only the toolchain URLs +
+    # sha256 are selected per-arch.
+    arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]
+    uv_sha = {
+        "x86_64": "2f9eaa976cf8ad8574623dde6916fb87ec047524fe65b99dc11e44e33eae4bfb",
+        "aarch64": "222fcd9878ed6f5a8565d121d1a10e1f958e3c7b42e4ec5cbc6927b2be20cc1a",
+    }
+    py_sha = {
+        "x86_64": "1bd4bba28b410dc617dd4a386ce08bc988b87c4320d1532682f488cc5e16edc7",
+        "aarch64": "b37a1dde4e7b8b2d2367218a3a955a4a08a89558fc7b43628dc05ec0c49e1ce9",
+    }
+    uv = imp("tarball+https", {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.24/uv-" + arch + "-unknown-linux-musl.tar.gz",
+        "sha256": uv_sha[arch],
+    })
+    python = imp("tarball+https", {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.12.13+20260623-" + arch + "-unknown-linux-musl-install_only.tar.gz",
+        "sha256": py_sha[arch],
+    })
+    musl = imp("hostmusl", {})
+
+    # The plugin turns uv.lock into one import per py3-none-any dependency.
+    pkgs = plugins["uv"](uv_lock = source.read("uv.lock"))
+
+    inputs = {"uv": uv, "python": python, "musl": musl}
+    copies = []
+    specs = []
+    for i, p in enumerate(pkgs):
+        name = "whl_%d" % i
+        inputs[name] = p["input"]
+        copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /build/wheelhouse/' % name)
+        specs.append("%s==%s" % (p["name"], p["version"]))
+
+    script = ("""
+musl="$(jq -r .musl <<<"$JOBS_DEPS")"
+uvdir="$(jq -r .uv <<<"$JOBS_DEPS")/uv-x86_64-unknown-linux-musl"
+pydir="$(jq -r .python <<<"$JOBS_DEPS")/python"
+
+# 1. musl loader for the dynamically-linked interpreter at BUILD time.
+mkdir -p /lib
+ln -sf "$musl/lib/ld-musl-x86_64.so.1" /lib/ld-musl-x86_64.so.1
+ln -sf "$musl/lib/libgcc_s.so.1"       /lib/libgcc_s.so.1
+export LD_LIBRARY_PATH="$musl/lib"
+
+# 2. Stage interpreter + uv into the writable /build tree (sequential cp; amberfuse).
+mkdir -p /build/python /build/uv /build/wheelhouse /build/uvcache "$out/bin"
+cp -dr "$pydir/." /build/python/
+cp -dr "$uvdir/." /build/uv/
+chmod -R u+w /build/python /build/uv
+export PATH="/build/uv:$PATH" HOME=/build UV_CACHE_DIR=/build/uvcache
+
+# 3. Build the wheelhouse from the fetched .whl inputs.
+""" + "\n".join(copies) + """
+
+# 4. Offline install of the LOCKED dependency set into $out/site-packages.
+uv pip install \\
+    --python /build/python/bin/python3 \\
+    --no-index --offline --find-links /build/wheelhouse \\
+    --target "$out/site-packages" \\
+    """ + " ".join(specs) + """
+
+# 5. App package onto site-packages (pure Python; no PEP 517 build in slice 0).
+cp -dr "$SRC/src/myapp" "$out/site-packages/myapp"
+
+# 6. Launcher: build-time paths baked via an EXPANDING heredoc; run-time logic via
+#    a LITERAL heredoc (so $here/$@ stay literal — no Starlark backslash escapes).
+cat > "$out/bin/myapp" <<EOF
+#!/jobs/shell/bin/bash
+LDSO="$musl/lib/ld-musl-x86_64.so.1"
+PYBIN="$pydir/bin/python3"
+MUSLLIB="$musl/lib"
+EOF
+cat >> "$out/bin/myapp" <<'EOF'
+here="$(cd "${0%/*}/.." && pwd)"
+export PYTHONPATH="$here/site-packages"
+export LD_LIBRARY_PATH="$MUSLLIB"
+exec "$LDSO" "$PYBIN" -m myapp "$@"
+EOF
+chmod +x "$out/bin/myapp"
+
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/myapp", "args": [], "env": {}}
+EOF
+""").replace("x86_64", arch)
+
+    return struct(inputs = inputs, env = {}, script = script, runtime_deps = [python, musl])

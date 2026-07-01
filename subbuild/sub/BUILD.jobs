@@ -1,0 +1,10 @@
+# Descendant sub-build: stands in for "compile the Rust wheel". Emits a sentinel
+# artifact the parent consumes. In a real project this would invoke a toolchain.
+
+def build():
+    return struct(
+        inputs = {},
+        env = {},
+        script = 'printf subbuilt > "$out/value"',
+        runtime_deps = [],
+    )

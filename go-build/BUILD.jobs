@@ -1,0 +1,65 @@
+# BUILD.jobs — build a Go program with JOBS, fully offline & CGO-free.
+#
+# plugins(): declares the "go" build plugin (parses go.sum → one module fetch per
+#            dependency, fetcher "gomod").
+# build():   fetches the Go toolchain (tarball+https) and every module the plugin
+#            discovered, assembles a module cache, and runs `go build` offline
+#            (GOPROXY=off) into $out/bin/app. No network, no GCC.
+
+def plugins():
+    return {"go": imp(fetcher = "goplugin", params = {})}
+
+def build():
+    # The Go toolchain tarball is named by GOARCH (amd64/arm64); the script body
+    # below is arch-agnostic (GOROOT-relative), so only the toolchain URL + sha256
+    # are selected per-arch.
+    goarch = {"linux/amd64": "amd64", "linux/arm64": "arm64"}[platform]
+    go_sha = {
+        "amd64": "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f",
+        "arm64": "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768",
+    }
+    toolchain = imp(fetcher = "tarball+https", params = {
+        "url": "https://go.dev/dl/go1.26.4.linux-" + goarch + ".tar.gz",
+        "sha256": go_sha[goarch],
+    })
+
+    # The plugin turns go.sum into one import per module (each fetched by "gomod"
+    # into a cache/download tree) — here gorilla/mux + urfave/cli/v2 and its deps
+    # (go-md2man, blackfriday, smetrics), i.e. several modules.
+    mods = plugins["go"](go_sum = source.read("go.sum"))
+
+    inputs = {"toolchain": toolchain}
+    copies = []
+    for m in mods:
+        name = "mod_" + m["path"].replace("/", "_").replace(".", "_").replace("-", "_")
+        inputs[name] = m["input"]
+        # Each module input's tree is rooted at cache/download/...; stage it in.
+        copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." "$GOMODCACHE/"' % name)
+
+    # Stage the toolchain + module cache from the read-only /jobs/store into the
+    # writable build tree with sequential copies, then build from local disk. The
+    # Go toolchain build opens its stdlib sources with high concurrency, which the
+    # on-demand FUSE store does not serve well; staging keeps go's hot path local.
+    script = """
+export GOROOT=/build/goroot
+mkdir -p "$GOROOT" "$out/bin"
+cp -dr "$(jq -r .toolchain <<<"$JOBS_DEPS")/go/." "$GOROOT/"
+export PATH="$GOROOT/bin:$PATH"
+export GOMODCACHE=/build/gomodcache GOCACHE=/build/gocache GOPATH=/build/gopath
+export GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOTOOLCHAIN=local CGO_ENABLED=0
+mkdir -p "$GOMODCACHE/cache/download"
+""" + "\n".join(copies) + """
+chmod -R u+w "$GOROOT" "$GOMODCACHE" 2>/dev/null || true
+cd "$SRC"
+go build -o "$out/bin/app" .
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/app", "args": [], "env": {}}
+EOF
+"""
+
+    return struct(
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = [],
+    )

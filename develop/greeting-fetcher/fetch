@@ -1,0 +1,9 @@
+#!/bin/sh
+# A trivial JOBS fetcher. The runner (and `jobs develop`) invoke it with:
+#   - CWD            = this artifact directory
+#   - JOBS_FETCH_PARAMS = the import's params, as JSON (ignored here)
+#   - JOBS_OUTPUT_DIR   = a writable dir; whatever we write here becomes the
+#                         import's output tree, ingested into amber as-is.
+# Exit 0 = success; 75 = retryable; any other non-zero = hard failure.
+set -e
+printf 'greetings from the imported dependency!\n' > "$JOBS_OUTPUT_DIR/greeting.txt"

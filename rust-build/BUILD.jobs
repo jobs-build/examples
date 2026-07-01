@@ -1,0 +1,103 @@
+# BUILD.jobs — build a Rust program with JOBS, fully offline & C-toolchain-free.
+#
+# plugins(): declares the "cargo" build plugin (parses Cargo.lock -> one crate
+#            fetch per dependency, fetcher "cargocrate").
+# build():   fetches the musl Rust toolchain (tarball+https), the musl loader
+#            (hostmusl), and every crate the plugin discovered; assembles a vendor
+#            directory + source-replacement config and runs `cargo build` offline.
+#            The output is a musl-DYNAMIC binary whose ELF interpreter points at the
+#            loader's content-addressed store path (a runtime_dep), so `jobs run`/
+#            `jobs image` resolve it from the materialized closure.
+
+def plugins():
+    return {"cargo": imp(fetcher = "cargoplugin", params = {})}
+
+def build():
+    # Map the JOBS platform to the musl/rust arch token. Every "x86_64" in the
+    # script below (target triple, ld-musl loader, rust-std/rustlib dirs,
+    # [target.*]) is this same token, so a single .replace() at the end retargets
+    # the whole script; only the toolchain URL + sha256 are selected per-arch.
+    arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]
+    rust_sha = {
+        "x86_64": "545aff63f37dea2fcbd8037b877219fca6fbba97660bdcb8d3a0fc5df5fa9edf",
+        "aarch64": "f55a1f02736d9bcd38969a30f2e6bde8184fd36f13e94f773cac068a56407f16",
+    }
+    toolchain = imp(fetcher = "tarball+https", params = {
+        "url": "https://static.rust-lang.org/dist/rust-1.96.0-" + arch + "-unknown-linux-musl.tar.gz",
+        "sha256": rust_sha[arch],
+    })
+    musl = imp(fetcher = "hostmusl", params = {})
+
+    # The plugin turns Cargo.lock into one import per crates.io crate (fetched by
+    # "cargocrate" into a <name>-<version>/ vendored source tree).
+    crates = plugins["cargo"](cargo_lock = source.read("Cargo.lock"))
+
+    inputs = {"toolchain": toolchain, "musl": musl}
+    copies = []
+    for i, c in enumerate(crates):
+        name = "crate_%d" % i
+        inputs[name] = c["input"]
+        copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /build/vendor/' % name)
+
+    script = ("""
+musl="$(jq -r .musl <<<"$JOBS_DEPS")"
+toolchain="$(jq -r .toolchain <<<"$JOBS_DEPS")"
+
+# 1. musl loader + libgcc_s for the PREBUILT toolchain (its PT_INTERP is
+#    /lib/ld-musl-x86_64.so.1; rustc/cargo also NEED-link libgcc_s.so.1). LD_LIBRARY_PATH
+#    lets the toolchain, the proc-macro .so files (dlopened by rustc at compile time), and
+#    build-script binaries find both libs from the hostmusl artifact.
+mkdir -p /lib
+ln -sf "$musl/lib/ld-musl-x86_64.so.1" /lib/ld-musl-x86_64.so.1
+ln -sf "$musl/lib/libgcc_s.so.1" /lib/libgcc_s.so.1
+export LD_LIBRARY_PATH="$musl/lib"
+
+# 2. Stage the toolchain into the writable /build tree (sequential cp avoids the
+#    FUSE store's concurrent-read EIO; the combined installer's top dir is
+#    versioned, so */ matches it). install.sh is never run.
+mkdir -p /build/rust "$out/bin"
+cp -dr "$toolchain"/*/rustc/. /build/rust/
+cp -dr "$toolchain"/*/cargo/. /build/rust/
+cp -dr "$toolchain"/*/rust-std-x86_64-unknown-linux-musl/. /build/rust/
+chmod -R u+w /build/rust
+export PATH="/build/rust/bin:$PATH"
+export CARGO_HOME=/build/cargo
+
+# 3. Vendor every crate (each input rooted at <name>-<version>/).
+mkdir -p /build/vendor
+""" + "\n".join(copies) + """
+
+# 4. Offline config: source replacement + dynamic musl linked by Rust's BUNDLED
+#    rust-lld (no GCC). rust-lld is invoked directly, so the link-args are BARE (no
+#    -Wl, cc-driver prefix). -L native=$musl/lib + link-self-contained resolve -lc/
+#    -lgcc_s (via the hostmusl symlinks + the toolchain's self-contained crt);
+#    --dynamic-linker + -rpath point the output's interpreter/RUNPATH into the
+#    content-addressed store (mounted by jobs run/image).
+RUSTLLD="/build/rust/lib/rustlib/x86_64-unknown-linux-musl/bin/rust-lld"
+mkdir -p "$SRC/.cargo"
+cat > "$SRC/.cargo/config.toml" <<EOF
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "/build/vendor"
+[target.x86_64-unknown-linux-musl]
+linker = "$RUSTLLD"
+[build]
+rustflags = ["-C", "target-feature=-crt-static", "-C", "link-self-contained=yes", "-L", "native=$musl/lib", "-C", "link-arg=--dynamic-linker=$musl/lib/ld-musl-x86_64.so.1", "-C", "link-arg=-rpath", "-C", "link-arg=$musl/lib"]
+EOF
+
+# 5. Build offline; install the binary + entrypoint. --frozen = --locked --offline.
+cd "$SRC"
+cargo build --release --frozen
+cp target/release/app "$out/bin/app"
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/app", "args": [], "env": {}}
+EOF
+""").replace("x86_64", arch)
+
+    return struct(
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = [musl],
+    )

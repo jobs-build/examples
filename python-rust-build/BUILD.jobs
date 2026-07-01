@@ -1,0 +1,147 @@
+# BUILD.jobs — build a Python app with a PyO3 (abi3) Rust extension, fully offline.
+#
+# plugins(): TWO plugins — "cargo" (Cargo.lock -> crate fetches) and "uv"
+#            (uv.lock -> wheel fetches).
+# build():   fetches the musl Rust toolchain + a musl maturin + the musl CPython +
+#            uv (tarball+https) and the musl loader (hostmusl); vendors crates +
+#            wheels; runs `maturin build --offline` (rust-build's vendor + rust-lld
+#            config) to compile an abi3 wheel; installs it + the pure-Python deps
+#            with uv into $out/site-packages; writes a musl-loader launcher.
+
+def plugins():
+    return {
+        "cargo": imp(fetcher = "cargoplugin", params = {}),
+        "uv": imp(fetcher = "uvplugin", params = {}),
+    }
+
+def build():
+    # Map the JOBS platform to the musl/rust arch token. Every "x86_64" in the
+    # script below (target triple, ld-musl loader, rust-std/rustlib dirs, the
+    # uv-<arch> extract dir, [target.*]) is this same token, so a single
+    # .replace() at the end retargets the whole script; only the toolchain URLs +
+    # sha256 are selected per-arch.
+    arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]
+    rust_sha = {
+        "x86_64": "545aff63f37dea2fcbd8037b877219fca6fbba97660bdcb8d3a0fc5df5fa9edf",
+        "aarch64": "f55a1f02736d9bcd38969a30f2e6bde8184fd36f13e94f773cac068a56407f16",
+    }
+    py_sha = {
+        "x86_64": "1bd4bba28b410dc617dd4a386ce08bc988b87c4320d1532682f488cc5e16edc7",
+        "aarch64": "b37a1dde4e7b8b2d2367218a3a955a4a08a89558fc7b43628dc05ec0c49e1ce9",
+    }
+    maturin_sha = {
+        "x86_64": "8cd87718295a87e47a9ba02db584e10afa67e1d95a141dc7a37846b2c72a3598",
+        "aarch64": "eb7a07e375b6258f6c563a0a970c4a65f10cb3e4ad0af3ee64f58b6ce61c1b09",
+    }
+    uv_sha = {
+        "x86_64": "2f9eaa976cf8ad8574623dde6916fb87ec047524fe65b99dc11e44e33eae4bfb",
+        "aarch64": "222fcd9878ed6f5a8565d121d1a10e1f958e3c7b42e4ec5cbc6927b2be20cc1a",
+    }
+    rust = imp("tarball+https", {
+        "url": "https://static.rust-lang.org/dist/rust-1.96.0-" + arch + "-unknown-linux-musl.tar.gz",
+        "sha256": rust_sha[arch],
+    })
+    python = imp("tarball+https", {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.12.13+20260623-" + arch + "-unknown-linux-musl-install_only.tar.gz",
+        "sha256": py_sha[arch],
+    })
+    maturin = imp("tarball+https", {
+        "url": "https://github.com/PyO3/maturin/releases/download/v1.8.3/maturin-" + arch + "-unknown-linux-musl.tar.gz",
+        "sha256": maturin_sha[arch],
+    })
+    uv = imp("tarball+https", {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.24/uv-" + arch + "-unknown-linux-musl.tar.gz",
+        "sha256": uv_sha[arch],
+    })
+    musl = imp("hostmusl", {})
+
+    crates = plugins["cargo"](cargo_lock = source.read("Cargo.lock"))
+    pkgs = plugins["uv"](uv_lock = source.read("uv.lock"))
+
+    inputs = {"rust": rust, "python": python, "maturin": maturin, "uv": uv, "musl": musl}
+    vendor_copies = []
+    for i, c in enumerate(crates):
+        name = "crate_%d" % i
+        inputs[name] = c["input"]
+        vendor_copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /build/vendor/' % name)
+    wheel_copies = []
+    for i, p in enumerate(pkgs):
+        name = "whl_%d" % i
+        inputs[name] = p["input"]
+        wheel_copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /build/wheelhouse/' % name)
+
+    script = ("""
+musl="$(jq -r .musl <<<"$JOBS_DEPS")"
+rustdir="$(jq -r .rust <<<"$JOBS_DEPS")"
+pydir="$(jq -r .python <<<"$JOBS_DEPS")/python"
+maturindir="$(jq -r .maturin <<<"$JOBS_DEPS")"
+uvdir="$(jq -r .uv <<<"$JOBS_DEPS")/uv-x86_64-unknown-linux-musl"
+
+# 1. musl loader for build-time interpreter/toolchain execution.
+mkdir -p /lib
+ln -sf "$musl/lib/ld-musl-x86_64.so.1" /lib/ld-musl-x86_64.so.1
+ln -sf "$musl/lib/libgcc_s.so.1"       /lib/libgcc_s.so.1
+ln -sf "$musl/lib/libc.so"             /lib/libc.so
+ln -sf "$musl/lib/libgcc_s.so"         /lib/libgcc_s.so
+export LD_LIBRARY_PATH="$musl/lib"
+
+# 2. Stage toolchains into the writable /build tree (sequential cp; amberfuse).
+mkdir -p /build/rust /build/python /build/maturin /build/uv /build/vendor /build/wheelhouse /build/wheels "$out/bin"
+cp -dr "$rustdir"/*/rustc/. /build/rust/
+cp -dr "$rustdir"/*/cargo/. /build/rust/
+cp -dr "$rustdir"/*/rust-std-x86_64-unknown-linux-musl/. /build/rust/
+cp -dr "$pydir/."       /build/python/
+cp -dr "$maturindir/."  /build/maturin/
+cp -dr "$uvdir/."       /build/uv/
+chmod -R u+w /build/rust /build/python /build/maturin /build/uv
+export PATH="/build/rust/bin:/build/maturin:/build/uv:$PATH"
+export CARGO_HOME=/build/cargo HOME=/build UV_CACHE_DIR=/build/uvcache
+
+# 3. Vendor crates + offline cargo config (verbatim from rust-build).
+""" + "\n".join(vendor_copies) + """
+RUSTLLD="/build/rust/lib/rustlib/x86_64-unknown-linux-musl/bin/rust-lld"
+mkdir -p "$SRC/.cargo"
+cat > "$SRC/.cargo/config.toml" <<EOF
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "/build/vendor"
+[target.x86_64-unknown-linux-musl]
+linker = "$RUSTLLD"
+rustflags = ["-C", "target-feature=-crt-static", "-C", "link-self-contained=yes", "-L", "native=$musl/lib", "-C", "link-arg=--dynamic-linker=$musl/lib/ld-musl-x86_64.so.1", "-C", "link-arg=-rpath", "-C", "link-arg=$musl/lib"]
+EOF
+
+# 4. Build the abi3 wheel offline with maturin (host==target==musl).
+export PYO3_PYTHON=/build/python/bin/python3
+# LIBRARY_PATH lets rustc find musl's libc.a + libgcc_s.so.1 when linking proc-macros and cdylibs.
+export LIBRARY_PATH="$musl/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+cd "$SRC"
+maturin build --release --offline --interpreter /build/python/bin/python3 --compatibility linux --out /build/wheels
+
+# 5. Wheelhouse for the pure-Python deps.
+""" + "\n".join(wheel_copies) + """
+
+# 6. Install the built wheel + its deps (resolved from the wheelhouse) offline.
+uv pip install --python /build/python/bin/python3 --no-index --offline --find-links /build/wheelhouse --target "$out/site-packages" /build/wheels/*.whl
+
+# 7. Launcher (build-time paths baked via expanding heredoc; run-time logic via literal heredoc).
+cat > "$out/bin/myapp" <<EOF
+#!/jobs/shell/bin/bash
+LDSO="$musl/lib/ld-musl-x86_64.so.1"
+PYBIN="$pydir/bin/python3"
+MUSLLIB="$musl/lib"
+EOF
+cat >> "$out/bin/myapp" <<'EOF'
+here="$(cd "${0%/*}/.." && pwd)"
+export PYTHONPATH="$here/site-packages"
+export LD_LIBRARY_PATH="$MUSLLIB"
+exec "$LDSO" "$PYBIN" -m myapp "$@"
+EOF
+chmod +x "$out/bin/myapp"
+
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/myapp", "args": [], "env": {}}
+EOF
+""").replace("x86_64", arch)
+
+    return struct(inputs = inputs, env = {}, script = script, runtime_deps = [python, musl])

@@ -1,0 +1,223 @@
+# BUILD.jobs — build a Ruby on Rails 8 app with JOBS, fully offline, on amd64 OR arm64.
+#
+# Demonstrates the whole stack, hermetic and net=none:
+#   * a relocatable musl Ruby assembled from Alpine apks + the zig C compiler,
+#   * an offline `bundle install --local` of the entire Rails gem closure
+#     (precompiled-musl native gems unpack; pure-Ruby + self-contained-C gems
+#     compile from source with zig cc — bcrypt's C extension is the headline),
+#   * a production Rails boot that migrates SQLite and verifies has_secure_password
+#     (the compiled bcrypt), and
+#   * a real Node dependency: an offline `yarn install` + esbuild asset bundle
+#     driven by a musl Node, wired through jsbundling-rails' assets:precompile.
+#
+# See docs/superpowers/specs/2026-06-28-rails-build-design.md.
+
+APK_ARCH = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
+
+# Alpine v3.22 main pins: (name, version, {arch: sha256-of-apk}). Same versions on
+# both arches; only the .apk sha256 differs.
+APKS = [
+    ("musl", "1.2.5-r12", {"x86_64": "4990a5e0ba312e478f94cfe431a70efef1538004eb361c8ae424516848be45bb", "aarch64": "ac281d1e7f9e9c447c51e309317b975f48be6edaf3ab91ae73b959cf86703782"}),
+    ("busybox", "1.37.0-r20", {"x86_64": "7cc34c2dda2520b456ab4a55abc37fe245ac90f98ab9f1c7a9be3aec035df48e", "aarch64": "9d25af67564c92a4a4c603462efdbcd23019e90b8785f1ebcad640cbb1551c93"}),
+    ("libgcc", "14.2.0-r6", {"x86_64": "04f3467bc967e705221a843fe4d3de5850db826e571686e0c0ed453d38cb5c59", "aarch64": "ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca"}),
+    ("gmp", "6.3.0-r3", {"x86_64": "d3f987ae3836ac7774324bff443dd49d03b846209660729d0c30dfff5546e138", "aarch64": "0d2eb1079b1b5692e9e6652ff0e269caeb9c812f483e34c88d461c03bcf75460"}),
+    ("libucontext", "1.3.2-r0", {"x86_64": "790ad2edd4b017968e275ed0fcf3d990e8758194c5f6624f375fd733cda78837", "aarch64": "466ef4aabcbe805d66a6026bc2b1db589d606abc2311c0d1da1c5c2b7c6d54fb"}),
+    ("libucontext-dev", "1.3.2-r0", {"x86_64": "37df97005db396d19614dbeb06cf9920dfc51116a2a1c6f3be318da8b325c0e5", "aarch64": "69ca0ea16987e5648242fe5f77c0241bc6be53aa9ee3ecbf9f847269dee635ef"}),
+    ("zlib", "1.3.2-r0", {"x86_64": "1f3d5f463f490dad3a68097376711bfe5e8156e9e8daff3070513aa4378cdeca", "aarch64": "7a39a917e4dab3c7a45537210ee5b5f17bf75f5e7777809a20cddd0afe074187"}),
+    ("libcrypto3", "3.5.7-r0", {"x86_64": "4ae7959ca1501c78437ee8250a624e2149405955b05abe94f8cf68358ded05e9", "aarch64": "40ab7ff1979ab730961f2a678b11f93ca5a00b40c8f2dadefff9d85ae0e5bec5"}),
+    ("libssl3", "3.5.7-r0", {"x86_64": "a3c2fa13023e88bf4f8dfe0e8847dcc1e2c1170be99969d761733e92b80dffa8", "aarch64": "8313f54b1bdb54b8ff88fac1e26f2d99bc28853c0fbcecce43f4bd5fdd2fadba"}),
+    ("libffi", "3.4.8-r0", {"x86_64": "9a75cb9024693c1e52c3d8d7c9afb7c79e6e20f6c08df28effdb8dd816095083", "aarch64": "9391f60a14c146655deaf65115563bc8dcd749cf0f93ec567e6443f2ed7d3bfc"}),
+    ("yaml", "0.2.5-r2", {"x86_64": "8662fcfd60acc67d6e79866a46a6c01688efea3abd16e709117164e9c29147e5", "aarch64": "738ca180c93b3d0180d4aa1b6afb1915407c449db443f6763fd6cead69e3712c"}),
+    ("ruby", "3.4.4-r0", {"x86_64": "b455b8556c4dbb1adb0d3bc49c7c1324988901dd61e0b115493b6c44916400ad", "aarch64": "054494137b003f628abe14dc002606e45c2b5af5772892cf78ca8b6a2b01d1f9"}),
+    ("ruby-libs", "3.4.4-r0", {"x86_64": "7d2481afb69669f67e2ff83a7a289d1b1af6dfdd4a2c8bb5e70b3183ba0f1987", "aarch64": "f80b39780e342ed7dac021faf635aaf4521662bfc9aab7408787b5f7071b3ae6"}),
+    ("ruby-dev", "3.4.4-r0", {"x86_64": "db4c84a90dfc22b5d1500120140c79e57dc30090299a3fa5e7c05d1fd29423c5", "aarch64": "e5b639b58aa9e1a91cb4c055e77060812108c3473b0b983d3d644b12a47d5709"}),
+    ("ruby-bundler", "2.6.8-r0", {"x86_64": "d23af88cd819bdedd7b0bea1ecba786c8b67d075612bddc2e328214a9f35292a", "aarch64": "1e706cceee20aeeb0d47fdb58b399f50dce9e4f8fb82741c4589f75e1daabc1a"}),
+    ("make", "4.4.1-r3", {"x86_64": "5b66eb4c2db0b0452f1c88d19909397f09e72425d1d9769a480d6370d8a9c310", "aarch64": "5f9be4c947b967b060ea665907b7d0bf159baf78d6972c9e3e617f2061bbe4a7"}),
+    ("tzdata", "2026b-r0", {"x86_64": "5f575b0bfdb762299f5425292172fdd4a82ce27d9025eb4727f4f871030b32f7", "aarch64": "56b89c9ec148dfaf66f655d3597d0c5e6aaef1324f62b3e5d682d57922c861b9"}),
+]
+
+# libstdc++ is needed only by the x64 musl Node; the arm64 musl Node statically
+# links it. (apk available only where used.)
+APKS_X86_64 = [
+    ("libstdc++", "14.2.0-r6", {"x86_64": "939f7c99898f3e8154207a17f4acbe8bc40437e1bb1b43f5525620ca9e452a2e"}),
+]
+
+ZIG = {
+    "x86_64": ("https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz", "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"),
+    "aarch64": ("https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz", "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"),
+}
+NODE = {
+    "x86_64": ("https://unofficial-builds.nodejs.org/download/release/v22.23.1/node-v22.23.1-linux-x64-musl.tar.gz", "b04877cf19a1b2515cfd95a0eab8f357b2eaa065128c3b9da07b0b10efe2577c"),
+    "aarch64": ("https://unofficial-builds.nodejs.org/download/release/v22.23.1/node-v22.23.1-linux-arm64-musl.tar.gz", "e936285203461f05614bba13fb265ab64e5c63048b35514cec66ae9a1666a07b"),
+}
+YARN_URL = "https://github.com/yarnpkg/yarn/releases/download/v1.22.22/yarn-v1.22.22.tar.gz"
+YARN_SHA = "88268464199d1611fcf73ce9c0a6c4d44c7d5363682720d8506f6508addf36a0"
+
+def key_of(name):
+    return "apk_" + name.replace("-", "_").replace("+", "_").replace(".", "_")
+
+def plugins():
+    return {
+        "bundler": imp(fetcher = "bundlerplugin", params = {}),
+        "node": imp(fetcher = "nodeplugin", params = {}),
+    }
+
+def build():
+    arch = APK_ARCH[platform]
+    pkgs = APKS + (APKS_X86_64 if arch == "x86_64" else [])
+    # apks the BUILT app needs at run time (the relocatable musl Ruby slice):
+    # interpreter + libs + bundler + busybox + tzdata. Headers/make/zig/node are
+    # build-only and excluded from the runtime closure.
+    runtime = ["musl", "busybox", "libgcc", "gmp", "libucontext", "zlib", "libcrypto3", "libssl3", "libffi", "yaml", "ruby", "ruby-libs", "ruby-bundler", "tzdata"]
+    inputs = {}
+    stage = []
+    runtime_deps = []
+    for (name, ver, shas) in pkgs:
+        k = key_of(name)
+        i = imp(fetcher = "alpineapk", params = {
+            "branch": "v3.22", "repo": "main", "arch": arch,
+            "name": name, "version": ver, "sha256": shas[arch],
+        })
+        inputs[k] = i
+        if name in runtime:
+            runtime_deps.append(i)
+        stage.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /' % k)
+
+    zig_url, zig_sha = ZIG[arch]
+    node_url, node_sha = NODE[arch]
+    inputs["zig"] = imp(fetcher = "tarballxz", params = {"url": zig_url, "sha256": zig_sha, "strip": 1})
+    inputs["node"] = imp(fetcher = "tarball+https", params = {"url": node_url, "sha256": node_sha, "strip": 1})
+    inputs["yarn"] = imp(fetcher = "tarball+https", params = {"url": YARN_URL, "sha256": YARN_SHA, "strip": 1})
+
+    gems = plugins["bundler"](gemfile_lock = source.read("Gemfile.lock"))
+    gem_copies = []
+    for i, g in enumerate(gems):
+        k = "gem_%d" % i
+        inputs[k] = g["input"]
+        gem_copies.append('cp "$(jq -r .%s <<<"$JOBS_DEPS")"/*.gem "$SRC/vendor/cache/" 2>/dev/null || true' % k)
+
+    npms = plugins["node"](yarn_lock = source.read("yarn.lock"))
+    npm_copies = []
+    for i, n in enumerate(npms):
+        k = "npm_%d" % i
+        inputs[k] = n["input"]
+        npm_copies.append('cp "$(jq -r .%s <<<"$JOBS_DEPS")"/*.tgz /build/npm-mirror/ 2>/dev/null || true' % k)
+
+    script = ("""
+set -e
+
+# 1. Stage the Alpine musl userland slice into the sandbox root. ruby/node run
+#    natively; the loader is at /lib/ld-musl-*.so.1, libstdc++/libgcc in /usr/lib.
+""" + "\n".join(stage) + """
+
+# 2. busybox applets into /bin (rbconfig bakes /bin/mkdir, /bin/sh) and an
+#    /usr/bin/env for the `#!/usr/bin/env node` shims npm packages ship.
+for a in $(/bin/busybox --list); do ln -sf /bin/busybox "/bin/$a"; done
+ln -sf /bin/busybox /usr/bin/env
+
+# 3. zig + a cc/c++ wrapper (target musl; drop the two hardening link flags zig's
+#    linker rejects). rbconfig's CC is the relative "cc", so this retargets native
+#    gem compilation onto zig.
+mkdir -p /build/zig /build/bin
+cp -dr "$(jq -r .zig <<<"$JOBS_DEPS")/." /build/zig/
+chmod -R u+w /build/zig
+cat > /build/bin/cc <<'WRAP'
+#!/bin/sh
+for a in "$@"; do
+  shift
+  case "$a" in
+    -Wl,-z,pack-relative-relocs|-Wl,--compress-debug-sections=zlib) ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+exec /build/zig/zig cc -target x86_64-linux-musl -fno-direct-access-external-data "$@"
+WRAP
+cat > /build/bin/c++ <<'WRAP'
+#!/bin/sh
+for a in "$@"; do
+  shift
+  case "$a" in
+    -Wl,-z,pack-relative-relocs|-Wl,--compress-debug-sections=zlib) ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+exec /build/zig/zig c++ -target x86_64-linux-musl -fno-direct-access-external-data "$@"
+WRAP
+chmod +x /build/bin/cc /build/bin/c++
+
+# 4. Stage the musl Node + Yarn (strip=1 drops the arch-versioned top dir).
+mkdir -p /build/node /build/yarn
+cp -dr "$(jq -r .node <<<"$JOBS_DEPS")/." /build/node/
+cp -dr "$(jq -r .yarn <<<"$JOBS_DEPS")/." /build/yarn/
+chmod -R u+w /build/node /build/yarn
+
+export PATH="/build/bin:/build/node/bin:/build/yarn/bin:/usr/bin:/bin:$PATH"
+export HOME=/build
+ruby --version
+node --version
+yarn --version
+
+# 5. Offline gem install: stage the .gem cache, then bundle install. Precompiled
+#    -*-linux-musl gems unpack; bcrypt/puma/bootsnap/msgpack/json compile their C
+#    from source with zig cc. (The .gem cache holds both arches' native variants;
+#    bundler installs the ones matching this platform.)
+mkdir -p "$SRC/vendor/cache"
+""" + "\n".join(gem_copies) + """
+cd "$SRC"
+export BUNDLE_FROZEN=true BUNDLE_PATH=vendor/bundle BUNDLE_DISABLE_SHARED_GEMS=true
+bundle install --local
+
+# 6. Offline JS install: stage the npm tarballs into a Yarn offline mirror and
+#    install esbuild from it (the mirror holds both arch binaries; yarn picks one).
+mkdir -p /build/npm-mirror
+""" + "\n".join(npm_copies) + """
+printf 'yarn-offline-mirror "/build/npm-mirror"\\nyarn-offline-mirror-pruning false\\n' > "$SRC/.yarnrc"
+yarn install --offline --frozen-lockfile
+
+# 7. Boot Rails offline: migrate SQLite + verify has_secure_password (compiled
+#    bcrypt), then assets:precompile — jsbundling's `yarn build` (esbuild bundles
+#    app/javascript) + Propshaft digest into public/assets.
+export RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1
+bundle exec rails db:prepare
+bundle exec rails runner 'u = User.create!(name: "alice", password: "s3cret"); raise "auth failed" unless User.find(u.id).authenticate("s3cret"); STDERR.puts "RAILS-OK rails=#{Rails.version} bcrypt has_secure_password verified"'
+bundle exec rails assets:precompile
+
+# 8. Sanity: the esbuild-built, Propshaft-digested application JS must exist.
+ls public/assets/.manifest.json >/dev/null
+ls public/assets/application-*.js >/dev/null
+
+# 9. Output the deployable app: source tree + vendored gems (with the zig-compiled
+#    bcrypt) + the migrated SQLite DB + precompiled public/assets. Drop build-only
+#    bulk (the .gem cache, node_modules, the build's bootsnap cache).
+mkdir -p "$out"
+cp -dr "$SRC"/. "$out"/
+rm -rf "$out/vendor/cache" "$out/node_modules" "$out/tmp/cache" "$out/.yarnrc"
+
+# A server entrypoint. `jobs run` materializes the runtime closure at /jobs/store
+# and runs this with the artifact as cwd + host network. It stages the musl-Ruby
+# slice from the closure into the root so ruby runs natively at /usr (+ the
+# /lib/ld-musl loader), then boots puma.
+cat > "$out/bin/serve" <<'EOF'
+#!/jobs/shell/bin/bash
+set -e
+self="$PWD"
+for d in /jobs/store/*/; do
+  d="${d%/}"
+  [ "$d" = "$self" ] && continue
+  cp -dr "$d"/. / 2>/dev/null || true
+done
+for a in $(/bin/busybox --list 2>/dev/null); do ln -sf /bin/busybox "/bin/$a" 2>/dev/null || true; done
+ln -sf /bin/busybox /usr/bin/env 2>/dev/null || true
+export PATH="/usr/bin:/bin:$PATH" HOME=/tmp
+export RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1
+export BUNDLE_PATH=vendor/bundle BUNDLE_FROZEN=true BUNDLE_DISABLE_SHARED_GEMS=true
+cd "$self"
+exec bundle exec rails server -b 0.0.0.0 -p "${PORT:-3000}"
+EOF
+chmod +x "$out/bin/serve"
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/serve", "args": [], "env": {}}
+EOF
+""").replace("x86_64", arch)
+
+    return struct(inputs = inputs, env = {}, script = script, runtime_deps = runtime_deps)
