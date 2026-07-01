@@ -26,7 +26,7 @@ def build():
         "url": "https://static.rust-lang.org/dist/rust-1.96.0-" + arch + "-unknown-linux-musl.tar.gz",
         "sha256": rust_sha[arch],
     })
-    musl = imp(fetcher = "hostmusl", params = {})
+    musl = imp(fetcher = "hostmusl", params = {}, platform = platform)
 
     # The plugin turns Cargo.lock into one import per crates.io crate (fetched by
     # "cargocrate" into a <name>-<version>/ vendored source tree).

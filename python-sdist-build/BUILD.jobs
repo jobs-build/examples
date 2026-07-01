@@ -42,7 +42,7 @@ def build():
         "url": "https://github.com/astral-sh/uv/releases/download/0.11.24/uv-" + arch + "-unknown-linux-musl.tar.gz",
         "sha256": uv_sha[arch],
     })
-    musl = imp("hostmusl", {})
+    musl = imp("hostmusl", {}, platform = platform)
     pp = source.read("pyproject.toml") if source.exists("pyproject.toml") else b""
     backends = plugins["pybackend"](pyproject = pp, platform = platform)
     inputs = {"py": py, "uv": uv, "musl": musl}
@@ -95,7 +95,7 @@ def build():
         "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.12.13+20260623-" + arch + "-unknown-linux-musl-install_only.tar.gz",
         "sha256": py_sha[arch],
     })
-    musl = imp("hostmusl", {})
+    musl = imp("hostmusl", {}, platform = platform)
 
     # The plugin turns uv.lock into one import per dependency:
     # kind="wheel" for packages with a py3-none-any wheel,

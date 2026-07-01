@@ -34,7 +34,7 @@ def build():
         "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.12.13+20260623-" + arch + "-unknown-linux-musl-install_only.tar.gz",
         "sha256": py_sha[arch],
     })
-    musl = imp("hostmusl", {})
+    musl = imp("hostmusl", {}, platform = platform)
 
     # The plugin turns uv.lock into one import per py3-none-any dependency.
     pkgs = plugins["uv"](uv_lock = source.read("uv.lock"))
