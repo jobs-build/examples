@@ -24,7 +24,6 @@ built from the other `jobs-build/*` repos.
 | [`python-rust-sdist-build/`](python-rust-sdist-build/) | A third-party Rust extension (`nh3`, ~90 crates) built from its sdist with maturin as a curated PEP-517 backend |
 | [`rails-build/`](rails-build/) | A Rails 8 app: bundler + node/esbuild assets, bcrypt's C extension compiled in-sandbox with `zig cc` |
 | [`subbuild/`](subbuild/) | `subbuild()` — a build input that is a build of a descendant directory |
-| [`jobs-build/`](jobs-build/) | Dogfood: JOBS compiles its own three binaries over the real ~100-module graph (source = a JOBS checkout) |
 
 All recipes are platform-parameterized and build on `linux/amd64` and
 `linux/arm64`.
@@ -48,8 +47,9 @@ jobs submit-build \
 ```
 
 Use a commit SHA as `ref` (a branch name caches as one import and won't
-re-fetch). `jobs-build/` is the exception: its *source* is a JOBS repo
-checkout, not this repo — see its README.
+re-fetch). The former `jobs-build/` self-build showcase moved into the JOBS
+repo itself (root `BUILD.jobs` — build a checkout with
+`jobs remote-build --source-dir . --param cmd=<binary>`).
 
 References to `architecture/*.md`, `docs/superpowers/*`, and
 `scripts/dev-setup.sh` in the per-example READMEs point into the JOBS repo.
