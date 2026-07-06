@@ -8,7 +8,10 @@
 #   * a production Rails boot that migrates SQLite and verifies has_secure_password
 #     (the compiled bcrypt), and
 #   * a real Node dependency: an offline `yarn install` + esbuild asset bundle
-#     driven by a musl Node, wired through jsbundling-rails' assets:precompile.
+#     driven by a musl Node, wired through jsbundling-rails' assets:precompile,
+#   * declared build caches (`caches=`): zig's compile cache and bootsnap's
+#     boot cache persist across builds, so warm rebuilds skip recompiling
+#     musl libc + the gems' C extensions and re-parsing the app on each boot.
 #
 # See docs/superpowers/specs/2026-06-28-rails-build-design.md.
 
@@ -145,6 +148,11 @@ exec /build/zig/zig c++ -target x86_64-linux-musl -fno-direct-access-external-da
 WRAP
 chmod +x /build/bin/cc /build/bin/c++
 
+# zig caches its from-source musl libc/compiler-rt builds and C-object
+# compilations here — a declared build cache, so warm builds hit it instead
+# of recompiling for every native gem.
+export ZIG_GLOBAL_CACHE_DIR=/zig-cache ZIG_LOCAL_CACHE_DIR=/zig-cache
+
 # 4. Stage the musl Node + Yarn (strip=1 drops the arch-versioned top dir).
 mkdir -p /build/node /build/yarn
 cp -dr "$(jq -r .node <<<"$JOBS_DEPS")/." /build/node/
@@ -178,6 +186,10 @@ yarn install --offline --frozen-lockfile
 #    bcrypt), then assets:precompile — jsbundling's `yarn build` (esbuild bundles
 #    app/javascript) + Propshaft digest into public/assets.
 export RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1
+# bootsnap (config/boot.rb) caches compiled ISeq/YAML here instead of the
+# default tmp/cache — a declared build cache, so the three Rails boots below
+# start warm on rebuilds (and nothing cache-derived lands in the output).
+export BOOTSNAP_CACHE_DIR=/bootsnap-cache
 bundle exec rails db:prepare
 bundle exec rails runner 'u = User.create!(name: "alice", password: "s3cret"); raise "auth failed" unless User.find(u.id).authenticate("s3cret"); STDERR.puts "RAILS-OK rails=#{Rails.version} bcrypt has_secure_password verified"'
 bundle exec rails assets:precompile
@@ -220,4 +232,16 @@ cat > "$out/JOBS.entrypoint" <<'EOF'
 EOF
 """).replace("x86_64", arch)
 
-    return struct(inputs = inputs, env = {}, script = script, runtime_deps = runtime_deps)
+    return struct(
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = runtime_deps,
+        # Persistent compile caches (advisory only; platform auto-appended by
+        # the runner): zig's cache keyed to the zig release, bootsnap's to the
+        # Ruby release.
+        caches = {
+            "/zig-cache": "examples-rails-build-zig0.16.0",
+            "/bootsnap-cache": "examples-rails-build-bootsnap-ruby3.4.4",
+        },
+    )
