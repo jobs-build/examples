@@ -7,7 +7,9 @@
 #            directory + source-replacement config and runs `cargo build` offline.
 #            The output is a musl-DYNAMIC binary whose ELF interpreter points at the
 #            loader's content-addressed store path (a runtime_dep), so `jobs run`/
-#            `jobs image` resolve it from the materialized closure.
+#            `jobs image` resolve it from the materialized closure. Cargo's target
+#            dir lives in a declared build cache (`caches=`), so warm builds skip
+#            recompiling the dependency crates.
 
 def plugins():
     return {"cargo": imp(fetcher = "cargoplugin", params = {})}
@@ -87,9 +89,14 @@ rustflags = ["-C", "target-feature=-crt-static", "-C", "link-self-contained=yes"
 EOF
 
 # 5. Build offline; install the binary + entrypoint. --frozen = --locked --offline.
+#    CARGO_TARGET_DIR points into the declared build cache, so compiled
+#    dependency crates + fingerprints persist across builds; the vendored
+#    deps' fingerprints are checksum-based, so the fresh-mtime vendor copies
+#    above don't invalidate them — a warm build recompiles only the app crate.
+export CARGO_TARGET_DIR=/cargo-target-cache
 cd "$SRC"
 cargo build --release --frozen
-cp target/release/app "$out/bin/app"
+cp "$CARGO_TARGET_DIR/release/app" "$out/bin/app"
 cat > "$out/JOBS.entrypoint" <<'EOF'
 {"command": "bin/app", "args": [], "env": {}}
 EOF
@@ -100,4 +107,7 @@ EOF
         env = {},
         script = script,
         runtime_deps = [musl],
+        # Persistent cargo target dir (compiled dependency crates), keyed to
+        # the toolchain release; platform is auto-appended by the runner.
+        caches = {"/cargo-target-cache": "examples-rust-build-rust1.96.0"},
     )
