@@ -3,6 +3,7 @@
 
 def build():
     return struct(
+        name = "subbuild (sub)",
         inputs = {},
         env = {},
         script = 'printf subbuilt > "$out/value"',

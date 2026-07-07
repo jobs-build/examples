@@ -58,6 +58,7 @@ EOF
 """
 
     return struct(
+        name = "go-build example",
         inputs = inputs,
         env = {},
         script = script,

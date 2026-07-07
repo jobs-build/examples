@@ -100,4 +100,4 @@ cat > "$out/JOBS.entrypoint" <<'EOF'
 EOF
 """).replace("x86_64", arch)
 
-    return struct(inputs = inputs, env = {}, script = script, runtime_deps = [python, musl])
+    return struct(name = "python-build example", inputs = inputs, env = {}, script = script, runtime_deps = [python, musl])

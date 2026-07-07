@@ -11,6 +11,7 @@
 def build():
     greeting = imp(fetcher = "greeting", params = {})
     return struct(
+        name = "myapp (develop)",
         # Discovered inputs: things that must be built/imported and assembled
         # into the read-only content-addressed /jobs/store before the build runs.
         # Each is NAMED; the name is the key the script looks up in JOBS_DEPS.

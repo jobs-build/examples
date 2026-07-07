@@ -233,6 +233,7 @@ EOF
 """).replace("x86_64", arch)
 
     return struct(
+        name = "rails-build example",
         inputs = inputs,
         env = {},
         script = script,

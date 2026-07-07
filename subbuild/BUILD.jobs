@@ -5,6 +5,7 @@
 def build():
     sub = subbuild("sub")
     return struct(
+        name = "subbuild example",
         inputs = {"sub": sub},
         env = {},
         script = 'printf "%s" "$(cat "$(jq -r .sub <<<"$JOBS_DEPS")/value")" > "$out/result"',
