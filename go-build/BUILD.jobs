@@ -45,7 +45,7 @@ export GOROOT=/build/goroot
 mkdir -p "$GOROOT" "$out/bin"
 cp -dr "$(jq -r .toolchain <<<"$JOBS_DEPS")/go/." "$GOROOT/"
 export PATH="$GOROOT/bin:$PATH"
-export GOMODCACHE=/build/gomodcache GOCACHE=/build/gocache GOPATH=/build/gopath
+export GOMODCACHE=/build/gomodcache GOCACHE=/go-build-cache GOPATH=/build/gopath
 export GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOTOOLCHAIN=local CGO_ENABLED=0
 mkdir -p "$GOMODCACHE/cache/download"
 """ + "\n".join(copies) + """
@@ -63,4 +63,9 @@ EOF
         env = {},
         script = script,
         runtime_deps = [],
+        # Persistent Go build cache (GOCACHE above): rebuilds recompile only
+        # what changed. Keyed to the toolchain release; platform is
+        # auto-appended by the runner. Pruned to what the build accessed
+        # (atime), uploaded on success only.
+        caches = {"/go-build-cache": "go-build-example-go1.26.4"},
     )
