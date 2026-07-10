@@ -8,8 +8,16 @@
 #
 # There is no plugins() here — this build needs no plugins, only one import.
 
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+GREETING = fetcher(
+    name   = "greeting",
+    url    = "https://github.com/jobs-build/fetcher-greeting/archive/2a748e9653d99b3dce3c791add1461e7241644c4.tar.gz",
+    sha256 = "dd3dee7bf10a92fcc12ea267077f4d2c3ac9101326c88eda59cd4a667cc6d9fa",
+)
+
 def build():
-    greeting = imp(fetcher = "greeting", params = {})
+    greeting = imp(fetcher = GREETING, params = {})
     return struct(
         name = "myapp (develop)",
         # Discovered inputs: things that must be built/imported and assembled

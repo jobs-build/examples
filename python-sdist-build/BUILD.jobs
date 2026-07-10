@@ -20,9 +20,23 @@
 # - `"` is fine (only `"""` ends the string)
 # - heredocs are NOT used inside GENERIC's script to avoid `"""` collision;
 #   instead all paths are expanded via `jq -r .key <<<"$JOBS_DEPS"`
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+UVPLUGIN = fetcher(
+    name   = "uvplugin",
+    url    = "https://github.com/jobs-build/plugin-uv/archive/d0de3cb41cf9cce59691722b11e5fcc453806068.tar.gz",
+    sha256 = "9cab9bca486414817274b11402c6580bf59a958f08db8b5bf03d99df298b70fa",
+)
+
 GENERIC = """
+PYBACKENDPLUGIN = fetcher(
+    name   = "pybackendplugin",
+    url    = "https://github.com/jobs-build/plugin-pybackend/archive/db3d17ffe441907e6d1bdeecd12c4ca778c3c4e4.tar.gz",
+    sha256 = "def37ca6a501e3a52952f593e9a6e2879555d734703cc4db9410bac6b5de74f1",
+)
+
 def plugins():
-    return {"pybackend": imp(fetcher = "pybackendplugin", params = {})}
+    return {"pybackend": imp(fetcher = PYBACKENDPLUGIN, params = {})}
 
 def build():
     arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]
@@ -75,7 +89,7 @@ def build():
 """
 
 def plugins():
-    return {"uv": imp(fetcher = "uvplugin", params = {})}
+    return {"uv": imp(fetcher = UVPLUGIN, params = {})}
 
 def build():
     arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]

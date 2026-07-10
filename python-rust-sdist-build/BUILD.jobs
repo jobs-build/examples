@@ -28,11 +28,30 @@
 #   instead all paths are expanded via `jq -r .key <<<"$JOBS_DEPS"`
 # - the .cargo/config.toml is written with printf using Q=$(printf '\x22') to
 #   avoid embedding literal double quotes that would break the Starlark string
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+UVPLUGIN = fetcher(
+    name   = "uvplugin",
+    url    = "https://github.com/jobs-build/plugin-uv/archive/d0de3cb41cf9cce59691722b11e5fcc453806068.tar.gz",
+    sha256 = "9cab9bca486414817274b11402c6580bf59a958f08db8b5bf03d99df298b70fa",
+)
+
 GENERIC = """
+PYBACKENDPLUGIN = fetcher(
+    name   = "pybackendplugin",
+    url    = "https://github.com/jobs-build/plugin-pybackend/archive/db3d17ffe441907e6d1bdeecd12c4ca778c3c4e4.tar.gz",
+    sha256 = "def37ca6a501e3a52952f593e9a6e2879555d734703cc4db9410bac6b5de74f1",
+)
+CARGOPLUGIN = fetcher(
+    name   = "cargoplugin",
+    url    = "https://github.com/jobs-build/plugin-cargo/archive/a1bb9cfa2f0974464f0e9375b951471f842af633.tar.gz",
+    sha256 = "29bf1fdba5d8fe1d85b5067ece21b270b654597581d1e98d112341c5dc2a49c5",
+)
+
 def plugins():
     return {
-        "pybackend": imp(fetcher = "pybackendplugin", params = {}),
-        "cargo": imp(fetcher = "cargoplugin", params = {}),
+        "pybackend": imp(fetcher = PYBACKENDPLUGIN, params = {}),
+        "cargo": imp(fetcher = CARGOPLUGIN, params = {}),
     }
 
 def build():
@@ -141,7 +160,7 @@ def build():
 """
 
 def plugins():
-    return {"uv": imp(fetcher = "uvplugin", params = {})}
+    return {"uv": imp(fetcher = UVPLUGIN, params = {})}
 
 def build():
     arch = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[platform]

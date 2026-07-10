@@ -9,8 +9,16 @@
 #            script + JOBS.entrypoint. The interpreter is musl-DYNAMIC, so the
 #            launcher invokes the loader explicitly and python+musl are runtime_deps.
 
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+UVPLUGIN = fetcher(
+    name   = "uvplugin",
+    url    = "https://github.com/jobs-build/plugin-uv/archive/d0de3cb41cf9cce59691722b11e5fcc453806068.tar.gz",
+    sha256 = "9cab9bca486414817274b11402c6580bf59a958f08db8b5bf03d99df298b70fa",
+)
+
 def plugins():
-    return {"uv": imp(fetcher = "uvplugin", params = {})}
+    return {"uv": imp(fetcher = UVPLUGIN, params = {})}
 
 def build():
     # Map the JOBS platform to the musl arch token. Every "x86_64" in the script

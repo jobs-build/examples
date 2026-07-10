@@ -6,8 +6,16 @@
 #            discovered, assembles a module cache, and runs `go build` offline
 #            (GOPROXY=off) into $out/bin/app. No network, no GCC.
 
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+GOPLUGIN = fetcher(
+    name   = "goplugin",
+    url    = "https://github.com/jobs-build/plugin-go/archive/609b0656b29417aadad3cfebefbd824aaf11f5fb.tar.gz",
+    sha256 = "dfd5dfe4171359cc0b30473ed023e28b198e3fdc659940a841629573a1f0a923",
+)
+
 def plugins():
-    return {"go": imp(fetcher = "goplugin", params = {})}
+    return {"go": imp(fetcher = GOPLUGIN, params = {})}
 
 def build():
     # The Go toolchain tarball is named by GOARCH (amd64/arm64); the script body

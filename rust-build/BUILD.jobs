@@ -11,8 +11,16 @@
 #            dir lives in a declared build cache (`caches=`), so warm builds skip
 #            recompiling the dependency crates.
 
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+CARGOPLUGIN = fetcher(
+    name   = "cargoplugin",
+    url    = "https://github.com/jobs-build/plugin-cargo/archive/a1bb9cfa2f0974464f0e9375b951471f842af633.tar.gz",
+    sha256 = "29bf1fdba5d8fe1d85b5067ece21b270b654597581d1e98d112341c5dc2a49c5",
+)
+
 def plugins():
-    return {"cargo": imp(fetcher = "cargoplugin", params = {})}
+    return {"cargo": imp(fetcher = CARGOPLUGIN, params = {})}
 
 def build():
     # Map the JOBS platform to the musl/rust arch token. Every "x86_64" in the

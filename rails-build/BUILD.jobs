@@ -15,6 +15,29 @@
 #
 # See docs/superpowers/specs/2026-06-28-rails-build-design.md.
 
+# Recipe-declared fetchers (JOBS 2026-07-10 design): plugins/fetchers are
+# pinned here; plugin artifacts bundle their companion fetcher pins.
+BUNDLERPLUGIN = fetcher(
+    name   = "bundlerplugin",
+    url    = "https://github.com/jobs-build/plugin-bundler/archive/b3b8eab2c347cd8de8fed0572be2aaf83b868163.tar.gz",
+    sha256 = "174b860c010a2ead4acd0f0f2626e046b06795a862b5a3bd1826efdb33c90153",
+)
+NODEPLUGIN = fetcher(
+    name   = "nodeplugin",
+    url    = "https://github.com/jobs-build/plugin-node/archive/68f3b3b21a911d553fa657de847c6e3bee854b43.tar.gz",
+    sha256 = "d5f5c76c0f1fca6c3c43672164020b60adc88a41559442befd8cb8eb109d8de5",
+)
+ALPINEAPK = fetcher(
+    name   = "alpineapk",
+    url    = "https://github.com/jobs-build/fetcher-alpineapk/archive/0a6a773a1247b7cab16f4dbb86facc0173a823d8.tar.gz",
+    sha256 = "b457e2ce7b357b240e7c160a0e65a46630067c2580b6872876829d6f07c4d12c",
+)
+TARBALLXZ = fetcher(
+    name   = "tarballxz",
+    url    = "https://github.com/jobs-build/fetcher-tarballxz/archive/efd3ee4d6fe9e465d5663d91967dee8ec61d7f99.tar.gz",
+    sha256 = "7d247510b9b9c5a3460f762be2d16388c828b8ac81dbc5f129601733f345b362",
+)
+
 APK_ARCH = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
 
 # Alpine v3.22 main pins: (name, version, {arch: sha256-of-apk}). Same versions on
@@ -61,8 +84,8 @@ def key_of(name):
 
 def plugins():
     return {
-        "bundler": imp(fetcher = "bundlerplugin", params = {}),
-        "node": imp(fetcher = "nodeplugin", params = {}),
+        "bundler": imp(fetcher = BUNDLERPLUGIN, params = {}),
+        "node": imp(fetcher = NODEPLUGIN, params = {}),
     }
 
 def build():
@@ -77,7 +100,7 @@ def build():
     runtime_deps = []
     for (name, ver, shas) in pkgs:
         k = key_of(name)
-        i = imp(fetcher = "alpineapk", params = {
+        i = imp(fetcher = ALPINEAPK, params = {
             "branch": "v3.22", "repo": "main", "arch": arch,
             "name": name, "version": ver, "sha256": shas[arch],
         })
@@ -88,7 +111,7 @@ def build():
 
     zig_url, zig_sha = ZIG[arch]
     node_url, node_sha = NODE[arch]
-    inputs["zig"] = imp(fetcher = "tarballxz", params = {"url": zig_url, "sha256": zig_sha, "strip": 1})
+    inputs["zig"] = imp(fetcher = TARBALLXZ, params = {"url": zig_url, "sha256": zig_sha, "strip": 1})
     inputs["node"] = imp(fetcher = "tarball+https", params = {"url": node_url, "sha256": node_sha, "strip": 1})
     inputs["yarn"] = imp(fetcher = "tarball+https", params = {"url": YARN_URL, "sha256": YARN_SHA, "strip": 1})
 
