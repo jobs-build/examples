@@ -1,0 +1,21 @@
+# Mirror .gitignore — these directories must NOT enter the content-addressed
+# source tree (K/F). Excluding node_modules/deps/_build is load-bearing: it
+# keeps F stable across local dev artifacts (the console-webui lesson).
+# hex-cache.ets is deliberately NOT listed — it is committed source, staged
+# into the sandbox's hex registry cache, and must be part of K/F.
+/_build/
+/deps/
+/.elixir_ls/
+/.fetch
+/cover/
+/doc/
+/tmp/
+/assets/node_modules/
+/priv/static/assets/
+/priv/static/cache_manifest.json
+erl_crash.dump
+npm-debug.log
+*.ez
+fireside-*.tar
+*.db
+*.db-*

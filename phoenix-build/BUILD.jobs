@@ -1,0 +1,309 @@
+# BUILD.jobs — build a Phoenix (Elixir) app with JOBS, fully offline, on amd64 OR arm64.
+#
+# Demonstrates, hermetic and net=none:
+#   * a relocatable musl Erlang/Elixir from Alpine apks,
+#   * offline hex: plugin-mix turns mix.lock into one content-addressed .tar
+#     import per package (fetcher "hexpm", pinned by the lock's outer checksum),
+#     staged into mix's own package cache — HEX_OFFLINE=1 deps.get re-verifies
+#     every checksum,
+#   * exqlite's bundled-SQLite C NIF compiled in-sandbox with zig cc,
+#   * an in-build Ecto migration + DB roundtrip (PHOENIX-OK),
+#   * Tailwind v4 + esbuild assets from an offline npm mirror via musl Node,
+#   * a self-contained OTP release (bundled ERTS) as the deployable output,
+#   * declared build caches: zig's compile cache and mix's _build
+#     (MIX_BUILD_ROOT), so warm rebuilds skip the dep closure + NIF.
+#
+# See docs/superpowers/specs/2026-07-14-phoenix-build-example-design.md.
+
+MIXPLUGIN = fetcher(
+    name   = "mixplugin",
+    url    = "https://github.com/jobs-build/plugin-mix/archive/be88f311ee8538407e593956be394cf104e12bef.tar.gz",
+    sha256 = "f6358eacbacc3bb2fe0d447e88f5bc16db4fc691e1e6575de7b7df1d94703c10",
+)
+NODEPLUGIN = fetcher(
+    name   = "nodeplugin",
+    url    = "https://github.com/jobs-build/plugin-node/archive/68f3b3b21a911d553fa657de847c6e3bee854b43.tar.gz",
+    sha256 = "d5f5c76c0f1fca6c3c43672164020b60adc88a41559442befd8cb8eb109d8de5",
+)
+HEXPM = fetcher(
+    name   = "hexpm",
+    url    = "https://github.com/jobs-build/fetcher-hexpm/archive/0ef524fcb7aae8e5324eb000c367b77ae17e15fc.tar.gz",
+    sha256 = "272dede78f463bcdb6fdc6e4bd0934deac0eff6b172d6af0f063674bd83c820d",
+)
+ALPINEAPK = fetcher(
+    name   = "alpineapk",
+    url    = "https://github.com/jobs-build/fetcher-alpineapk/archive/0a6a773a1247b7cab16f4dbb86facc0173a823d8.tar.gz",
+    sha256 = "b457e2ce7b357b240e7c160a0e65a46630067c2580b6872876829d6f07c4d12c",
+)
+TARBALLXZ = fetcher(
+    name   = "tarballxz",
+    url    = "https://github.com/jobs-build/fetcher-tarballxz/archive/efd3ee4d6fe9e465d5663d91967dee8ec61d7f99.tar.gz",
+    sha256 = "7d247510b9b9c5a3460f762be2d16388c828b8ac81dbc5f129601733f345b362",
+)
+
+APK_ARCH = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}
+
+# Alpine v3.22 pins: (repo, name, version, {arch: sha256}). Task 5 output verbatim.
+# NOTE: import the LITERAL package names erlang27 / erlang27-dev — plain
+# erlang/erlang-dev are provides-only virtual names in Alpine v3.22.
+APKS = [
+    ("main", "musl", "1.2.5-r12", {
+        "x86_64": "4990a5e0ba312e478f94cfe431a70efef1538004eb361c8ae424516848be45bb",
+        "aarch64": "ac281d1e7f9e9c447c51e309317b975f48be6edaf3ab91ae73b959cf86703782",
+    }),
+    ("main", "busybox", "1.37.0-r20", {
+        "x86_64": "7cc34c2dda2520b456ab4a55abc37fe245ac90f98ab9f1c7a9be3aec035df48e",
+        "aarch64": "9d25af67564c92a4a4c603462efdbcd23019e90b8785f1ebcad640cbb1551c93",
+    }),
+    ("main", "libgcc", "14.2.0-r6", {
+        "x86_64": "04f3467bc967e705221a843fe4d3de5850db826e571686e0c0ed453d38cb5c59",
+        "aarch64": "ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca",
+    }),
+    ("main", "libstdc++", "14.2.0-r6", {
+        "x86_64": "939f7c99898f3e8154207a17f4acbe8bc40437e1bb1b43f5525620ca9e452a2e",
+        "aarch64": "0d2f054057a4f932e985a129eccb79908b40964185139a0a609aed3032aba064",
+    }),
+    ("main", "zlib", "1.3.2-r0", {
+        "x86_64": "1f3d5f463f490dad3a68097376711bfe5e8156e9e8daff3070513aa4378cdeca",
+        "aarch64": "7a39a917e4dab3c7a45537210ee5b5f17bf75f5e7777809a20cddd0afe074187",
+    }),
+    ("main", "libncursesw", "6.5_p20250503-r0", {
+        "x86_64": "aeafdfca68147b014705b4e2564639ade6345198debb522f2c6c51d32e417651",
+        "aarch64": "419b375e8a4345e7172b1f0f3a3c57db61374f5408cdb875d9e860bd4c243aca",
+    }),
+    ("main", "ncurses-terminfo-base", "6.5_p20250503-r0", {
+        "x86_64": "0815a5f0403974bb9c34d456e71dc9c0222cb5455d393bc63c44b573da3d7fe0",
+        "aarch64": "3d37403e0b5ab9eb0c1ce269444e4a385faec9fe6af452c1c6956806b13d2bd6",
+    }),
+    ("main", "libcrypto3", "3.5.7-r0", {
+        "x86_64": "4ae7959ca1501c78437ee8250a624e2149405955b05abe94f8cf68358ded05e9",
+        "aarch64": "40ab7ff1979ab730961f2a678b11f93ca5a00b40c8f2dadefff9d85ae0e5bec5",
+    }),
+    ("main", "libssl3", "3.5.7-r0", {
+        "x86_64": "a3c2fa13023e88bf4f8dfe0e8847dcc1e2c1170be99969d761733e92b80dffa8",
+        "aarch64": "8313f54b1bdb54b8ff88fac1e26f2d99bc28853c0fbcecce43f4bd5fdd2fadba",
+    }),
+    ("main", "make", "4.4.1-r3", {
+        "x86_64": "5b66eb4c2db0b0452f1c88d19909397f09e72425d1d9769a480d6370d8a9c310",
+        "aarch64": "5f9be4c947b967b060ea665907b7d0bf159baf78d6972c9e3e617f2061bbe4a7",
+    }),
+    ("main", "tzdata", "2026c-r0", {
+        "x86_64": "69210881b8b36ffac662a5a85d5014079ca9f8036d25f6b8969f7751c256531c",
+        "aarch64": "3f20bacd8342486213f4a1a4f4b065bdb8f0675376271a5483bce2148ffdb3da",
+    }),
+    ("community", "erlang27", "27.3.4.6-r0", {
+        "x86_64": "e8f60b3b03353b44865ee5a082d576229733725b62defd20a71539a4dc5e99cb",
+        "aarch64": "c1ed128644fad12674e84b03dbbedbc9b2154b85551ab502faac59d52e019ec0",
+    }),
+    ("community", "erlang27-dev", "27.3.4.6-r0", {
+        "x86_64": "14df8ac081bb53e31b55ba65165316108f679c8c71c0554d5f94dbd1ea803a35",
+        "aarch64": "6942316927f1a6f4d05aa754466c046aaff2a140e670f175db64d50816fa758c",
+    }),
+    ("community", "elixir", "1.18.3-r0", {
+        "x86_64": "f826d4768b6ed3af91e73bc69acb696308f60ab0aa635a79430c6a23999ff969",
+        "aarch64": "01ca4a6939d2dd269383691691998fe3da0aee11e79cc1a91a63f526e741cb41",
+    }),
+]
+
+# Runtime slice (readelf-verified, Task 5): what the RELEASE's bundled ERTS +
+# crypto/zlib NIFs dynamically link, plus the sandbox userland and tz database.
+# libssl3 is BUILD-ONLY (no OTP .so links libssl.so.3); libstdc++ is runtime on
+# BOTH arches (beam.smp NEEDs it).
+RUNTIME = [
+    "musl", "busybox", "libgcc", "libstdc++", "zlib",
+    "libncursesw", "ncurses-terminfo-base", "libcrypto3", "tzdata",
+]
+
+ZIG = {
+    "x86_64":  ("https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",  "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"),
+    "aarch64": ("https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz", "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"),
+}
+NODE = {
+    "x86_64":  ("https://unofficial-builds.nodejs.org/download/release/v22.23.1/node-v22.23.1-linux-x64-musl.tar.gz",   "b04877cf19a1b2515cfd95a0eab8f357b2eaa065128c3b9da07b0b10efe2577c"),
+    "aarch64": ("https://unofficial-builds.nodejs.org/download/release/v22.23.1/node-v22.23.1-linux-arm64-musl.tar.gz", "e936285203461f05614bba13fb265ab64e5c63048b35514cec66ae9a1666a07b"),
+}
+# Offline hex client + rebar3. rebar3 comes from its byte-stable GitHub release
+# asset (repo.hex.pm/installs is NOT byte-stable); the filename MUST be exactly
+# "rebar3" (escript derives its entry module from the file name).
+HEX_EZ = ("https://repo.hex.pm/installs/1.18.0/hex-2.2.1.ez", "a82791e28977f010a6eff5b2a35457448fe823f67e7390025b455f2fff0118a8")
+REBAR3 = ("https://github.com/erlang/rebar3/releases/download/3.25.1/rebar3", "924576737f0d3098e1fa4691e6f542bf61036d234c61ebdc18aafef8e2bccf67")
+
+def key_of(name):
+    return "apk_" + name.replace("-", "_").replace("+", "_").replace(".", "_")
+
+def plugins():
+    return {
+        "mix": imp(fetcher = MIXPLUGIN, params = {}),
+        "node": imp(fetcher = NODEPLUGIN, params = {}),
+    }
+
+def build():
+    arch = APK_ARCH[platform]
+    inputs = {}
+    stage = []
+    runtime_deps = []
+    for (repo, name, ver, shas) in APKS:
+        i = imp(fetcher = ALPINEAPK, params = {
+            "branch": "v3.22", "repo": repo, "arch": arch,
+            "name": name, "version": ver, "sha256": shas[arch],
+        })
+        inputs[key_of(name)] = i
+        if name in RUNTIME:
+            runtime_deps.append(i)
+        stage.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." /' % key_of(name))
+
+    zig_url, zig_sha = ZIG[arch]
+    node_url, node_sha = NODE[arch]
+    inputs["zig"] = imp(fetcher = TARBALLXZ, params = {"url": zig_url, "sha256": zig_sha, "strip": 1})
+    inputs["node"] = imp(fetcher = "tarball+https", params = {"url": node_url, "sha256": node_sha, "strip": 1})
+    inputs["hex_ez"] = imp(fetcher = HEXPM, params = {"url": HEX_EZ[0], "sha256": HEX_EZ[1], "filename": "hex.ez"})
+    inputs["rebar3"] = imp(fetcher = HEXPM, params = {"url": REBAR3[0], "sha256": REBAR3[1], "filename": "rebar3"})
+
+    pkgs = plugins["mix"](mix_lock = source.read("mix.lock"))
+    hex_copies = []
+    for i, p in enumerate(pkgs):
+        k = "hex_%d" % i
+        inputs[k] = p["input"]
+        hex_copies.append('cp "$(jq -r .%s <<<"$JOBS_DEPS")"/*.tar "$HEX_HOME/packages/hexpm/"' % k)
+
+    npms = plugins["node"](package_lock = source.read("assets/package-lock.json"))
+    npm_adds = []
+    for i, n in enumerate(npms):
+        k = "npm_%d" % i
+        inputs[k] = n["input"]
+        npm_adds.append('npm cache add "$(jq -r .%s <<<"$JOBS_DEPS")"/*.tgz' % k)
+
+    script = ("""
+set -e
+
+# 1. Alpine musl userland + Erlang/Elixir into the sandbox root.
+""" + "\n".join(stage) + """
+for a in $(/bin/busybox --list); do ln -sf /bin/busybox "/bin/$a"; done
+ln -sf /bin/busybox /usr/bin/env
+
+# 2. zig + cc/c++ wrappers targeting musl (drops the two hardening link flags
+#    zig's linker rejects) — elixir_make compiles exqlite's SQLite NIF with it.
+mkdir -p /build/zig /build/bin
+cp -dr "$(jq -r .zig <<<"$JOBS_DEPS")/." /build/zig/
+chmod -R u+w /build/zig
+cat > /build/bin/cc <<'WRAP'
+#!/bin/sh
+for a in "$@"; do
+  shift
+  case "$a" in
+    -Wl,-z,pack-relative-relocs|-Wl,--compress-debug-sections=zlib) ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+exec /build/zig/zig cc -target x86_64-linux-musl -fno-direct-access-external-data "$@"
+WRAP
+sed 's/zig cc/zig c++/' /build/bin/cc > /build/bin/c++
+chmod +x /build/bin/cc /build/bin/c++
+export ZIG_GLOBAL_CACHE_DIR=/zig-cache ZIG_LOCAL_CACHE_DIR=/zig-cache
+export CC=/build/bin/cc CXX=/build/bin/c++
+
+# 3. musl Node for the asset pipeline.
+mkdir -p /build/node
+cp -dr "$(jq -r .node <<<"$JOBS_DEPS")/." /build/node/
+chmod -R u+w /build/node
+export PATH="/build/bin:/build/node/bin:/usr/bin:/bin:$PATH" HOME=/build
+elixir --version
+node --version
+
+# 4. Offline hex: stage every locked package .tar into mix's package cache
+#    PLUS the committed registry snapshot (hex-cache.ets — offline deps.get
+#    needs it, and it must be generated by the same hex version installed
+#    below; see the pins file), install the hex client + rebar3 from pinned
+#    files. HEX_OFFLINE=1 makes any cache miss a loud failure, and mix
+#    re-verifies each tar against mix.lock.
+export HEX_HOME=/build/hex MIX_HOME=/build/mix HEX_OFFLINE=1
+mkdir -p "$HEX_HOME/packages/hexpm"
+cp "$SRC/hex-cache.ets" "$HEX_HOME/cache.ets"
+""" + "\n".join(hex_copies) + """
+mix archive.install "$(jq -r .hex_ez <<<"$JOBS_DEPS")/hex.ez" --force
+mix local.rebar rebar3 "$(jq -r .rebar3 <<<"$JOBS_DEPS")/rebar3" --force
+
+# 5. Compile, with mix's _build AND deps/ in persistent build caches: warm
+#    rebuilds skip re-fetching + recompiling the dep closure and the NIF. deps/
+#    must be cached too — a fresh `mix deps.get` into an empty deps/ re-extracts
+#    every tarball with new mtimes, which makes mix recompile the whole closure
+#    even though _build is warm. With deps/ persisted (mtimes preserved by the
+#    lossless cache round-trip), deps.get is a no-op and mix's manifests skip.
+cd "$SRC"
+export MIX_ENV=prod MIX_BUILD_ROOT=/mix-build-cache LANG=C.UTF-8
+ln -sfn /mix-deps-cache "$SRC/deps"
+mix deps.get
+mix compile
+
+# 6. Migrate SQLite + prove the zig-compiled exqlite NIF end-to-end.
+export DATABASE_PATH=/build/db/fireside.db SECRET_KEY_BASE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+mkdir -p /build/db
+mix ecto.create
+mix ecto.migrate
+# The roundtrip is asserted inside `mix run` (set -e aborts the build if any
+# match fails); the marker is echoed from the shell afterwards so it is always
+# flushed to stdout (an in-VM IO.puts to :stderr does not reliably survive the
+# `mix run` VM halt in the captured build log).
+mix run -e '{:ok, _} = Fireside.Guestbook.create_entry(%{name: "alice", message: "hermetic hello"}); [e | _] = Fireside.Guestbook.list_entries(); true = e.name == "alice"'
+echo "PHOENIX-OK exqlite NIF + Ecto roundtrip verified"
+
+# 7. Assets offline: npm mirror -> node_modules, then the mix wrappers exec the
+#    npm-installed CLIs (ESBUILD_PATH/TAILWIND_PATH — no binary downloads).
+export npm_config_cache=/build/npmcache npm_config_offline=true
+export npm_config_audit=false npm_config_fund=false npm_config_update_notifier=false
+cd "$SRC/assets"
+""" + "\n".join(npm_adds) + """
+npm ci --offline
+cd "$SRC"
+export ESBUILD_PATH="$SRC/assets/node_modules/.bin/esbuild" TAILWIND_PATH="$SRC/assets/node_modules/.bin/tailwindcss"
+mix assets.deploy
+ls priv/static/assets >/dev/null
+
+# 8. Self-contained OTP release (bundled ERTS).
+mix release --overwrite
+
+# Touch every deps/ cache file so the atime-pruner retains the whole closure:
+# on a warm rebuild the unchanged deps are never re-read (mix skips them), so
+# without this read-back their atimes stay at the pre-aged epoch and the pruner
+# would evict the sources — degrading the cache after the first warm build.
+tar -cf /dev/null -C /mix-deps-cache . >/dev/null 2>&1 || true
+
+# 9. Output: the release + the migrated DB + a serve entrypoint.
+mkdir -p "$out/data"
+cp -dr "$MIX_BUILD_ROOT/prod/rel/fireside/." "$out/"
+cp /build/db/fireside.db "$out/data/fireside.db"
+cat > "$out/bin/serve" <<'EOF'
+#!/jobs/shell/bin/bash
+set -e
+self="$PWD"
+for d in /jobs/store/*/; do
+  d="${d%/}"
+  [ "$d" = "$self" ] && continue
+  cp -dr "$d"/. / 2>/dev/null || true
+done
+for a in $(/bin/busybox --list 2>/dev/null); do ln -sf /bin/busybox "/bin/$a" 2>/dev/null || true; done
+export PATH="/usr/bin:/bin:$PATH" HOME=/tmp LANG=C.UTF-8
+export SECRET_KEY_BASE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+export PHX_SERVER=true PHX_HOST=localhost PORT="${PORT:-4000}"
+export DATABASE_PATH="$self/data/fireside.db"
+cd "$self"
+exec bin/fireside start
+EOF
+chmod +x "$out/bin/serve"
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/serve", "args": [], "env": {}}
+EOF
+""").replace("x86_64", arch)
+
+    return struct(
+        name = "phoenix-build example",
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = runtime_deps,
+        caches = {
+            "/zig-cache": "examples-phoenix-build-zig0.16.0",
+            "/mix-build-cache": "examples-phoenix-build-mix-elixir1.18-otp27",
+            "/mix-deps-cache": "examples-phoenix-build-mix-deps-elixir1.18-otp27",
+        },
+    )
