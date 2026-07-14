@@ -12,7 +12,8 @@ and no glibc**. It exercises the full stack a modern Phoenix app needs:
 - **Compiling C in a NIF.** `exqlite` bundles its own SQLite and compiles the
   C NIF *from source inside the sandbox* with **`zig cc`** targeting musl.
 - **A real DB roundtrip.** The build runs an in-sandbox Ecto migration and a
-  DB roundtrip, gated on the artifact printing `PHOENIX-OK`.
+  DB roundtrip; the build's success is gated on that roundtrip succeeding,
+  with `PHOENIX-OK` printed as the marker.
 - **Offline JS/CSS.** Phoenix 1.8's asset pipeline — **Tailwind v4 + daisyUI +
   esbuild** — runs fully offline from a pre-fetched npm mirror via a **musl
   Node** (**`nodeplugin`** over `assets/package-lock.json`; the hex `esbuild`/
@@ -64,7 +65,7 @@ fetches, so it can't be used as a content-addressed import.
 ## Build it & run it
 
 ```bash
-scripts/dev-setup.sh                               # one-time: local amber daemon + signing key
+scripts/dev-setup.sh                               # one-time: local env (embedded store) + signing key
 jb run --source ../examples/phoenix-build          # build offline, then serve on :4000
 # or: jb develop --source ../examples/phoenix-build  # drop into the build sandbox
 ```

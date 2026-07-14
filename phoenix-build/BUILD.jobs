@@ -10,8 +10,10 @@
 #   * an in-build Ecto migration + DB roundtrip (PHOENIX-OK),
 #   * Tailwind v4 + esbuild assets from an offline npm mirror via musl Node,
 #   * a self-contained OTP release (bundled ERTS) as the deployable output,
-#   * declared build caches: zig's compile cache and mix's _build
-#     (MIX_BUILD_ROOT), so warm rebuilds skip the dep closure + NIF.
+#   * declared build caches: zig's compile cache, mix's _build
+#     (MIX_BUILD_ROOT), and the extracted deps/ tree (keeps dependency source
+#     mtimes stable so warm rebuilds skip the whole dep closure), so warm
+#     rebuilds skip the dep closure + NIF.
 #
 # See docs/superpowers/specs/2026-07-14-phoenix-build-example-design.md.
 
@@ -232,6 +234,12 @@ mix local.rebar rebar3 "$(jq -r .rebar3 <<<"$JOBS_DEPS")/rebar3" --force
 cd "$SRC"
 export MIX_ENV=prod MIX_BUILD_ROOT=/mix-build-cache LANG=C.UTF-8
 ln -sfn /mix-deps-cache "$SRC/deps"
+# Self-heal a partially-pruned deps cache: a dir that kept its .hex marker but
+# lost its sources would make deps.get no-op and compile fail persistently —
+# an advisory cache must degrade to cold, never break.
+for d in /mix-deps-cache/*/; do
+  [ -e "${d}.hex" ] && [ -z "$(ls -A "$d" | grep -v '^\.hex$')" ] && rm -rf "$d"
+done 2>/dev/null || true
 mix deps.get
 mix compile
 
