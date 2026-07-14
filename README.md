@@ -23,6 +23,7 @@ built from the other `jobs-build/*` repos.
 | [`python-sdist-build/`](python-sdist-build/) | A pure-Python dependency built **from its sdist** as a sub-build (PEP-517 via `pybackendplugin`) |
 | [`python-rust-sdist-build/`](python-rust-sdist-build/) | A third-party Rust extension (`nh3`, ~90 crates) built from its sdist with maturin as a curated PEP-517 backend |
 | [`rails-build/`](rails-build/) | A Rails 8 app: bundler + node/esbuild assets, bcrypt's C extension compiled in-sandbox with `zig cc` |
+| [`phoenix-build/`](phoenix-build/) | A Phoenix 1.8 + LiveView app: `mixplugin` turns `mix.lock` into `hexpm` imports, exqlite's SQLite NIF compiled with `zig cc`, offline Tailwind/esbuild assets, `mix release` output |
 | [`subbuild/`](subbuild/) | `subbuild()` — a build input that is a build of a descendant directory |
 
 All recipes are platform-parameterized and build on `linux/amd64` and
