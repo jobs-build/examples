@@ -85,6 +85,25 @@ APKS = [
         "x86_64": "a3c2fa13023e88bf4f8dfe0e8847dcc1e2c1170be99969d761733e92b80dffa8",
         "aarch64": "8313f54b1bdb54b8ff88fac1e26f2d99bc28853c0fbcecce43f4bd5fdd2fadba",
     }),
+    # ccache + its shared libs (build-only): fronts the zig cc/c++ wrappers so
+    # C objects (exqlite's sqlite3.c) cache across builds — zig's own cache
+    # does not cache user C compiles.
+    ("main", "ccache", "4.11.3-r1", {
+        "x86_64": "a71c5ed70603f6e20fe6ec052bf21af60c8fe308e70ae44e90cca515ebee7c78",
+        "aarch64": "b6259915985a0388672f10add3190ccce6f00391f4232c91586d48a9629da574",
+    }),
+    ("main", "hiredis", "1.3.0-r0", {
+        "x86_64": "f9e02648601c64b0cfeb5dbb08bcf49f98ba4c92a60e2d245445f35df08c07e6",
+        "aarch64": "2c2b75f39dfece80adb782fbc19c7798a204406e5d1721803c498e93c4689798",
+    }),
+    ("main", "libxxhash", "0.8.3-r0", {
+        "x86_64": "e3140cf609508b32db2aec81c8736e7db5d96c351857c99b364a6d1a913bb850",
+        "aarch64": "3abb8477abdf290c7bf4d7627af1675f225ab74c3f71ef03a7cbabc9ccadcb0d",
+    }),
+    ("main", "zstd-libs", "1.5.7-r0", {
+        "x86_64": "1bdd6e57cfbfbfd6e8481cad37ddd5d199950715bec1879b3afb600272dbb09e",
+        "aarch64": "a0e92d2225941a514eb0b2325b137fe6444ef9171627aae8129b74a6ad934ac4",
+    }),
     ("main", "make", "4.4.1-r3", {
         "x86_64": "5b66eb4c2db0b0452f1c88d19909397f09e72425d1d9769a480d6370d8a9c310",
         "aarch64": "5f9be4c947b967b060ea665907b7d0bf159baf78d6972c9e3e617f2061bbe4a7",
@@ -185,6 +204,14 @@ ln -sf /bin/busybox /usr/bin/env
 
 # 2. zig + cc/c++ wrappers targeting musl (drops the two hardening link flags
 #    zig's linker rejects) — elixir_make compiles exqlite's SQLite NIF with it.
+#    The wrappers run through ccache: zig's own cache covers zig's bundled
+#    musl-libc/compiler-rt builds but NOT user C objects (measured: two
+#    back-to-back sqlite3.c compiles cost 29s and 30s), so ccache is what makes
+#    the NIF compile cacheable across builds. Content-hash based, so it
+#    survives the fresh mtimes/inodes a deps re-extraction produces; the
+#    compiler identity is pinned as a constant string because the zig import's
+#    sha256 already pins the compiler bytes (mtime-based detection would miss
+#    every build — zig is re-staged fresh each time).
 mkdir -p /build/zig /build/bin
 cp -dr "$(jq -r .zig <<<"$JOBS_DEPS")/." /build/zig/
 chmod -R u+w /build/zig
@@ -197,11 +224,13 @@ for a in "$@"; do
     *) set -- "$@" "$a" ;;
   esac
 done
-exec /build/zig/zig cc -target x86_64-linux-musl -fno-direct-access-external-data "$@"
+exec /usr/bin/ccache /build/zig/zig cc -target x86_64-linux-musl -fno-direct-access-external-data "$@"
 WRAP
 sed 's/zig cc/zig c++/' /build/bin/cc > /build/bin/c++
 chmod +x /build/bin/cc /build/bin/c++
 export ZIG_GLOBAL_CACHE_DIR=/zig-cache ZIG_LOCAL_CACHE_DIR=/zig-cache
+export CCACHE_DIR=/ccache CCACHE_COMPILERCHECK=string:zig-0.16.0
+export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime
 export CC=/build/bin/cc CXX=/build/bin/c++
 
 # 3. musl Node for the asset pipeline.
@@ -318,6 +347,7 @@ EOF
         resources = struct(cpu = "2", memory = "4Gi"),
         caches = {
             "/zig-cache": "examples-phoenix-build-zig0.16.0",
+            "/ccache": "examples-phoenix-build-ccache-zig0.16.0",
             "/mix-build-cache": "examples-phoenix-build-mix-elixir1.18-otp27",
             "/mix-deps-cache": "examples-phoenix-build-mix-deps-elixir1.18-otp27",
         },

@@ -85,9 +85,18 @@ assets are what render the page.
 
 ## Declared build caches
 
-Three persistent caches, atime-pruned, gated to their own `build-pinned:F`:
+Four persistent caches, atime-pruned, gated to their own `build-pinned:F`:
 
-- **`/zig-cache`** — zig's C compile cache for the `exqlite` NIF.
+- **`/zig-cache`** — zig's own cache: its from-source musl-libc/compiler-rt
+  builds. It does **not** cache user C objects (measured: two back-to-back
+  `sqlite3.c` compiles cost 29s and 30s) — that's what `/ccache` is for.
+- **`/ccache`** — ccache (an Alpine apk) fronting the zig `cc`/`c++`
+  wrappers. Content-hash based, so it survives the fresh mtimes/inodes a
+  dependency re-extraction produces; the compiler identity is pinned as a
+  constant string (`CCACHE_COMPILERCHECK=string:zig-0.16.0`) because the zig
+  import's sha256 already pins the compiler bytes. This is what makes the
+  `exqlite` SQLite-amalgamation compile cacheable when mix *does* recompile
+  deps: measured 30s cold → **6s** on a warm ccache across builds.
 - **`/mix-build-cache`** — mix's `_build` (via `MIX_BUILD_ROOT`), keyed
   `elixir1.18-otp27`.
 - **`/mix-deps-cache`** — the extracted `deps/` tree. Keeping dependency
@@ -96,7 +105,9 @@ Three persistent caches, atime-pruned, gated to their own `build-pinned:F`:
 
 Locally, a warm rebuild (editing only app code) took **1m20s** vs **2m14s**
 cold — the dependency closure fetch/extract and the `exqlite` NIF compile are
-both skipped.
+both skipped entirely. When the deps cache is cold but ccache is warm (fresh
+runner, evicted cache), the closure recompiles but the NIF's C portion hits
+ccache (~1m47s total instead of ~2m14s).
 
 ## Notes / pins
 
