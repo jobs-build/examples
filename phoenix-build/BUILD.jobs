@@ -238,7 +238,7 @@ ln -sfn /mix-deps-cache "$SRC/deps"
 # lost its sources would make deps.get no-op and compile fail persistently —
 # an advisory cache must degrade to cold, never break.
 for d in /mix-deps-cache/*/; do
-  [ -e "${d}.hex" ] && [ -z "$(ls -A "$d" | grep -v '^\.hex$')" ] && rm -rf "$d"
+  [ -e "${d}.hex" ] && [ -z "$(ls -A "$d" | grep -Fvx .hex)" ] && rm -rf "$d"
 done 2>/dev/null || true
 mix deps.get
 mix compile
