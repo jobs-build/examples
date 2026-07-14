@@ -71,11 +71,16 @@ jb run --source ../examples/phoenix-build          # build offline, then serve o
 
 ```
 $ curl localhost:4000
-fireside PHOENIX-OK — ...
+<!-- ... -->
+<h1 ...>Fireside guestbook</h1>
+<!-- ... -->
 ```
 
-That line proves the whole stack: the OTP release boots, Ecto migrates and
-round-trips SQLite, and the offline-compiled assets are served.
+The build itself prints `PHOENIX-OK exqlite NIF + Ecto roundtrip verified`
+once the in-sandbox migration + DB roundtrip gate passes; `curl` against the
+running release then proves the rest at runtime — the OTP release boots,
+Ecto/SQLite serve real data, and the offline-compiled Tailwind/esbuild
+assets are what render the page.
 
 ## Declared build caches
 
