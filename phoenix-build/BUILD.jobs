@@ -301,6 +301,13 @@ EOF
         env = {},
         script = script,
         runtime_deps = runtime_deps,
+        # exqlite's SQLite NIF compiles the ~9MB sqlite3.c amalgamation as one
+        # translation unit with zig cc; alongside the running beam that peaks
+        # over the default 1Gi build cgroup, which the arm64 runner enforces as
+        # memory.max -> the compile was OOM-killed ("make ... Killed"). 4Gi
+        # gives comfortable headroom (both runners advertise >=10Gi). Resources
+        # are scheduling metadata, not part of build identity (K/F).
+        resources = struct(cpu = "2", memory = "4Gi"),
         caches = {
             "/zig-cache": "examples-phoenix-build-zig0.16.0",
             "/mix-build-cache": "examples-phoenix-build-mix-elixir1.18-otp27",
