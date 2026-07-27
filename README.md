@@ -1,5 +1,9 @@
 # JOBS examples
 
+<p align="center">
+  <img src="docs/assets/jobs-logo.jpg" alt="Examples of using JOBS" width="520">
+</p>
+
 Worked example projects for [JOBS](https://github.com/draganm/jobs), a
 Nix/Bazel-inspired distributed build system built on content-addressing and
 hermetic, reproducible builds. Each directory is a self-contained project with
